@@ -22,10 +22,11 @@ jobs:
       - name: Install Dependencies (vcpkg)
         shell: pwsh
         run: |
-          # Use the built-in vcpkg tool
+          # Added libpng:x64-windows to the list
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
+          vcpkg install libpng:x64-windows
 
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
@@ -43,13 +44,12 @@ jobs:
       - name: Configure CMake
         shell: pwsh
         run: |
-          mkdir build
-          # We add the Policy Minimum flag to bypass the eglut error
-          # We also explicitly enable some SDL3 features that were "OFF" in your log
+          if (!(Test-Path "build")) { mkdir build }
+          # Fixed the version string to 3.5.0 and added PNG paths
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5.0 `
             -DSDL_JOYSTICK=ON `
             -DSDL_HAPTIC=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
