@@ -13,26 +13,30 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Builder Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup MSVC & CMake
         uses: lukka/get-cmake@latest
 
       - name: Install Dependencies (vcpkg)
-        # Replacing manual OpenSSL/Protobuf builds with vcpkg
+        # Replacing the complex manual builds from the old macOS logic
         run: |
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
 
+      - name: Clone MCPELauncher Source
+        shell: pwsh
+        run: |
+          git clone https://github.com/minecraft-linux/mcpelauncher-manifest --recursive -b ${{ inputs.mcpelauncher-ref }} source/mcpelauncher
+
       - name: Configure CMake
         shell: pwsh
         run: |
           mkdir build
-          cmake -S . -B build `
+          # The FIX: Point -S (source) to the directory where we cloned the repo
+          cmake -S source/mcpelauncher -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
             -DCMAKE_TOOLCHAIN_FILE=C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake
@@ -44,31 +48,13 @@ jobs:
         shell: pwsh
         run: |
           mkdir dist
-          # Copy the executable and necessary DLLs
-          copy build/Release/*.exe dist/
-          copy build/Release/*.dll dist/
+          if (Test-Path "build/Release") {
+            copy build/Release/*.exe dist/
+            copy build/Release/*.dll dist/
+          }
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
         with:
           name: mcpelauncher-windows-x64
           path: dist/
-
-  publish-release:
-    needs: build-windows
-    if: inputs.publish
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: mcpelauncher-windows-x64
-          path: release-files
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "v${{ github.run_number }}"
-          files: release-files/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

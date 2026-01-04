@@ -21,8 +21,12 @@ jobs:
     - name: Setup Outputs
       id: out
       run: |
-        # Preserving your logic for versioning from repo files
-        echo "mcpelauncher-ref=$(cat mcpelauncher.commit 2>/dev/null || echo 'ng')" >> $GITHUB_OUTPUT
+        # Use a fallback if the file doesn't exist yet
+        if [ -f mcpelauncher.commit ]; then
+          echo "mcpelauncher-ref=$(cat mcpelauncher.commit)" >> $GITHUB_OUTPUT
+        else
+          echo "mcpelauncher-ref=ng" >> $GITHUB_OUTPUT
+        fi
     outputs:
       mcpelauncher-ref: ${{ steps.out.outputs.mcpelauncher-ref }}
 
