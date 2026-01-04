@@ -44,10 +44,14 @@ jobs:
         shell: pwsh
         run: |
           mkdir build
-          # Use $env:VCPKG_INSTALLATION_ROOT which is the official way to find vcpkg on GitHub Runners
+          # We add the Policy Minimum flag to bypass the eglut error
+          # We also explicitly enable some SDL3 features that were "OFF" in your log
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DSDL_JOYSTICK=ON `
+            -DSDL_HAPTIC=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build Project
