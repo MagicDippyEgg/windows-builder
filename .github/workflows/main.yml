@@ -16,15 +16,14 @@ jobs:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
-      # FIX 1: Added 'qtwebengine' to the modules list
-      - name: Install Qt
+      - name: Install Qt (with WebEngine)
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.15.2'
           host: 'windows'
           arch: 'win64_msvc2019_64'
+          # We need 'qtwebengine' for the Xbox Login screen
           modules: 'qtwebengine'
-          # We also install these to be safe for the UI dependencies
           archives: 'qtbase qtwebengine qtdeclarative qttools'
 
       - name: Setup MSVC & CMake
@@ -48,18 +47,34 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      # FIX 2: The Magic Patch Script
-      # This finds every CMakeLists.txt and replaces "VERSION 3" with "VERSION 3.10"
-      - name: Patch CMake Version Requirements
+      # THE FIX: Aggressive Patching
+      # This looks for ANY cmake_minimum_required line and forces it to 3.10
+      - name: Force Patch CMake Versions
         shell: pwsh
         run: |
-          Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt" | ForEach-Object {
-            $content = Get-Content $_.FullName
-            # Replace strict "VERSION 3" with "VERSION 3.10"
-            $newContent = $content -replace 'cmake_minimum_required\(VERSION 3\)', 'cmake_minimum_required(VERSION 3.10)'
-            $newContent | Set-Content $_.FullName
+          Write-Host "Scanning for outdated CMakeLists.txt files..."
+          $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
+          foreach ($file in $files) {
+              $content = Get-Content $file.FullName
+              $newContent = @()
+              $patched = $false
+              
+              foreach ($line in $content) {
+                  # Regex to catch "cmake_minimum_required(VERSION X...)" regardless of spacing or number
+                  if ($line -match 'cmake_minimum_required\s*\(') {
+                      # Replace the whole line with a safe modern version
+                      $newContent += 'cmake_minimum_required(VERSION 3.10)'
+                      $patched = $true
+                  } else {
+                      $newContent += $line
+                  }
+              }
+
+              if ($patched) {
+                  $newContent | Set-Content $file.FullName
+                  Write-Host "Fixed version in: $($file.FullName)"
+              }
           }
-          Write-Host "Patched CMake files to be compatible with modern runners."
 
       - name: Configure CMake
         shell: pwsh
@@ -77,7 +92,7 @@ jobs:
       - name: Build Project
         run: cmake --build build --config Release -j 4
 
-      - name: Package Artifacts (Run windeployqt)
+      - name: Package Artifacts (windeployqt)
         shell: pwsh
         run: |
           mkdir dist
@@ -88,7 +103,7 @@ jobs:
           
           if ($exe) {
              Write-Host "Running windeployqt on $exe"
-             # Added --compiler-runtime to grab MSVC DLLs too
+             # Added --compiler-runtime to grab MSVC DLLs
              & $windeployqt $exe --no-translations --no-system-d3d-compiler --compiler-runtime --dir dist
           }
 
