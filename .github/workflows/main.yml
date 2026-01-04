@@ -16,16 +16,17 @@ jobs:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
-      # FIX: Added 'qtwebchannel' to modules and archives
-      - name: Install Qt (with WebEngine & WebChannel)
+      # FIX: Simplified the modules. 
+      # 'qtwebengine' usually pulls in webchannel automatically on Windows 5.15.2.
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.15.2'
           host: 'windows'
           arch: 'win64_msvc2019_64'
-          # We added 'qtwebchannel' here
-          modules: 'qtwebengine qtwebchannel'
-          archives: 'qtbase qtwebengine qtwebchannel qtdeclarative qttools'
+          modules: 'qtwebengine' 
+          # Removed the explicit 'archives' list to let the action decide the best dependencies
+          setup-python: 'true'
 
       - name: Setup MSVC & CMake
         uses: lukka/get-cmake@latest
@@ -51,32 +52,20 @@ jobs:
       - name: Force Patch CMake Versions
         shell: pwsh
         run: |
-          Write-Host "Scanning for outdated CMakeLists.txt files..."
           $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $files) {
               $content = Get-Content $file.FullName
-              $newContent = @()
-              $patched = $false
-              
-              foreach ($line in $content) {
-                  if ($line -match 'cmake_minimum_required\s*\(') {
-                      $newContent += 'cmake_minimum_required(VERSION 3.10)'
-                      $patched = $true
-                  } else {
-                      $newContent += $line
-                  }
-              }
-
-              if ($patched) {
-                  $newContent | Set-Content $file.FullName
-                  Write-Host "Fixed version in: $($file.FullName)"
-              }
+              $newContent = $content -replace 'cmake_minimum_required\s*\(\s*VERSION\s+[0-9.]+\s*\)', 'cmake_minimum_required(VERSION 3.10)'
+              $newContent | Set-Content $file.FullName
           }
 
       - name: Configure CMake
         shell: pwsh
         run: |
           if (!(Test-Path "build")) { mkdir build }
+          
+          # We manually point to where the Qt Action installs things
+          $env:Qt5_Dir = "$env:Qt5_DIR" 
           
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
@@ -94,13 +83,10 @@ jobs:
         run: |
           mkdir dist
           Get-ChildItem -Path build/Release -Include *.exe, *.dll -Recurse | Copy-Item -Destination dist/
-
-          $windeployqt = "$env:Qt5_Dir/bin/windeployqt.exe"
           $exe = (Get-ChildItem dist/*.exe | Select-Object -First 1).FullName
-          
           if ($exe) {
-             Write-Host "Running windeployqt on $exe"
-             & $windeployqt $exe --no-translations --no-system-d3d-compiler --compiler-runtime --dir dist
+             # windeployqt is in the bin folder of the Qt installation
+             & "$env:Qt5_Dir/bin/windeployqt.exe" $exe --no-translations --no-system-d3d-compiler --compiler-runtime --dir dist
           }
 
       - name: Upload Windows Build
