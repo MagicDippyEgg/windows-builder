@@ -16,13 +16,21 @@ jobs:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
+      # NEW STEP: Install Qt5 for the GUI
+      # This downloads the necessary UI libraries in about 1-2 minutes.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: 'windows'
+          arch: 'win64_msvc2019_64'
+
       - name: Setup MSVC & CMake
         uses: lukka/get-cmake@latest
 
       - name: Install Dependencies (vcpkg)
         shell: pwsh
         run: |
-          # Added angle:x64-windows to provide EGL/GLES
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
@@ -42,8 +50,9 @@ jobs:
         shell: pwsh
         run: |
           if (!(Test-Path "build")) { mkdir build }
-          # 1. Fixed the policy value to "3.5" (CMake is happy with major.minor)
-          # 2. Added -DENABLE_EGL=ON to tell the project to use the EGL we just installed
+          
+          # We REMOVED "-DBUILD_UI=OFF" so it will now build the GUI.
+          # We added "-DCMAKE_PREFIX_PATH..." so it finds the Qt we just installed.
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
@@ -51,16 +60,31 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
             -DSDL_JOYSTICK=ON `
             -DSDL_HAPTIC=ON `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir"
 
       - name: Build Project
         run: cmake --build build --config Release -j 4
 
-      - name: Package Artifacts
+      - name: Package Artifacts (Run windeployqt)
         shell: pwsh
         run: |
           mkdir dist
+          # 1. Copy the built files (EXE and DLLs)
           Get-ChildItem -Path build/Release -Include *.exe, *.dll -Recurse | Copy-Item -Destination dist/
+
+          # 2. Run windeployqt
+          # This tool scans your EXE and automatically copies all the Qt DLLs needed to run it.
+          # Without this, the app would crash immediately on your PC saying "Qt5Core.dll missing".
+          $windeployqt = "$env:Qt5_Dir/bin/windeployqt.exe"
+          $exe = (Get-ChildItem dist/*.exe | Select-Object -First 1).FullName
+          
+          if ($exe) {
+             Write-Host "Running windeployqt on $exe"
+             & $windeployqt $exe --no-translations --no-system-d3d-compiler --dir dist
+          } else {
+             Write-Warning "No executable found to deploy!"
+          }
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
