@@ -20,7 +20,9 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Install Dependencies (vcpkg)
+        shell: pwsh
         run: |
+          # Use the built-in vcpkg tool
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
@@ -28,24 +30,25 @@ jobs:
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
         run: |
-          # 1. Clone the repo without specifying a branch yet
-          git clone https://github.com/minecraft-linux/mcpelauncher-manifest source/mcpelauncher --recursive
-          cd source/mcpelauncher
+          # Ensure directory is clean
+          if (Test-Path "source") { Remove-Item -Recurse -Force "source" }
           
-          # 2. Checkout the specific commit/ref passed from ci.yml
+          git clone https://github.com/minecraft-linux/mcpelauncher-manifest source --recursive
+          cd source
+          
+          # Checkout the specific commit/ref
           git checkout ${{ inputs.mcpelauncher-ref }}
-          
-          # 3. Update submodules again in case the checkout changed them
           git submodule update --init --recursive
 
       - name: Configure CMake
         shell: pwsh
         run: |
           mkdir build
-          cmake -S source/mcpelauncher -B build `
+          # Use $env:VCPKG_INSTALLATION_ROOT which is the official way to find vcpkg on GitHub Runners
+          cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
-            -DCMAKE_TOOLCHAIN_FILE=C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build Project
         run: cmake --build build --config Release -j 4
@@ -54,10 +57,8 @@ jobs:
         shell: pwsh
         run: |
           mkdir dist
-          if (Test-Path "build/Release") {
-            copy build/Release/*.exe dist/
-            copy build/Release/*.dll dist/
-          }
+          # Look for any executables or dlls in the build output
+          Get-ChildItem -Path build/Release -Include *.exe, *.dll -Recurse | Copy-Item -Destination dist/
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
