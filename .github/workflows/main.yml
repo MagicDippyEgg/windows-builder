@@ -16,15 +16,16 @@ jobs:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
-      - name: Install Qt (with WebEngine)
+      # FIX: Added 'qtwebchannel' to modules and archives
+      - name: Install Qt (with WebEngine & WebChannel)
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.15.2'
           host: 'windows'
           arch: 'win64_msvc2019_64'
-          # We need 'qtwebengine' for the Xbox Login screen
-          modules: 'qtwebengine'
-          archives: 'qtbase qtwebengine qtdeclarative qttools'
+          # We added 'qtwebchannel' here
+          modules: 'qtwebengine qtwebchannel'
+          archives: 'qtbase qtwebengine qtwebchannel qtdeclarative qttools'
 
       - name: Setup MSVC & CMake
         uses: lukka/get-cmake@latest
@@ -47,8 +48,6 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      # THE FIX: Aggressive Patching
-      # This looks for ANY cmake_minimum_required line and forces it to 3.10
       - name: Force Patch CMake Versions
         shell: pwsh
         run: |
@@ -60,9 +59,7 @@ jobs:
               $patched = $false
               
               foreach ($line in $content) {
-                  # Regex to catch "cmake_minimum_required(VERSION X...)" regardless of spacing or number
                   if ($line -match 'cmake_minimum_required\s*\(') {
-                      # Replace the whole line with a safe modern version
                       $newContent += 'cmake_minimum_required(VERSION 3.10)'
                       $patched = $true
                   } else {
@@ -103,7 +100,6 @@ jobs:
           
           if ($exe) {
              Write-Host "Running windeployqt on $exe"
-             # Added --compiler-runtime to grab MSVC DLLs
              & $windeployqt $exe --no-translations --no-system-d3d-compiler --compiler-runtime --dir dist
           }
 
