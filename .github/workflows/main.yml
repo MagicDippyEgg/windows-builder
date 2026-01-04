@@ -16,16 +16,13 @@ jobs:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
-      # FIX: Simplified the modules. 
-      # 'qtwebengine' usually pulls in webchannel automatically on Windows 5.15.2.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.15.2'
           host: 'windows'
           arch: 'win64_msvc2019_64'
-          modules: 'qtwebengine' 
-          # Removed the explicit 'archives' list to let the action decide the best dependencies
+          modules: 'qtwebengine'
           setup-python: 'true'
 
       - name: Setup MSVC & CMake
@@ -34,11 +31,13 @@ jobs:
       - name: Install Dependencies (vcpkg)
         shell: pwsh
         run: |
+          # Added sdl2 for Windows controller support
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
           vcpkg install libpng:x64-windows
           vcpkg install angle:x64-windows
+          vcpkg install sdl2:x64-windows
 
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
@@ -64,14 +63,15 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # We manually point to where the Qt Action installs things
-          $env:Qt5_Dir = "$env:Qt5_DIR" 
-          
+          # FIX: We added -DBUILD_GAMEPAD=OFF (to skip Linux gamepad code)
+          # We added -DENABLE_SDL_INPUT=ON (to use Windows-friendly controllers)
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
             -DENABLE_EGL=ON `
-            -DSDL_JOYSTICK=ON `
+            -DBUILD_GAMEPAD=OFF `
+            -DENABLE_SDL_INPUT=ON `
+            -DSDL2_DIR="$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/share/sdl2" `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir"
 
@@ -85,7 +85,6 @@ jobs:
           Get-ChildItem -Path build/Release -Include *.exe, *.dll -Recurse | Copy-Item -Destination dist/
           $exe = (Get-ChildItem dist/*.exe | Select-Object -First 1).FullName
           if ($exe) {
-             # windeployqt is in the bin folder of the Qt installation
              & "$env:Qt5_Dir/bin/windeployqt.exe" $exe --no-translations --no-system-d3d-compiler --compiler-runtime --dir dist
           }
 
