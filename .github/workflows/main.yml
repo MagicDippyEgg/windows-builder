@@ -22,22 +22,19 @@ jobs:
       - name: Install Dependencies (vcpkg)
         shell: pwsh
         run: |
-          # Added libpng:x64-windows to the list
+          # Added angle:x64-windows to provide EGL/GLES
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
           vcpkg install libpng:x64-windows
+          vcpkg install angle:x64-windows
 
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
         run: |
-          # Ensure directory is clean
           if (Test-Path "source") { Remove-Item -Recurse -Force "source" }
-          
           git clone https://github.com/minecraft-linux/mcpelauncher-manifest source --recursive
           cd source
-          
-          # Checkout the specific commit/ref
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
@@ -45,11 +42,13 @@ jobs:
         shell: pwsh
         run: |
           if (!(Test-Path "build")) { mkdir build }
-          # Fixed the version string to 3.5.0 and added PNG paths
+          # 1. Fixed the policy value to "3.5" (CMake is happy with major.minor)
+          # 2. Added -DENABLE_EGL=ON to tell the project to use the EGL we just installed
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5.0 `
+            -DENABLE_EGL=ON `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
             -DSDL_JOYSTICK=ON `
             -DSDL_HAPTIC=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
@@ -61,7 +60,6 @@ jobs:
         shell: pwsh
         run: |
           mkdir dist
-          # Look for any executables or dlls in the build output
           Get-ChildItem -Path build/Release -Include *.exe, *.dll -Recurse | Copy-Item -Destination dist/
 
       - name: Upload Windows Build
