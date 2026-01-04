@@ -21,7 +21,6 @@ jobs:
     - name: Setup Outputs
       id: out
       run: |
-        # Use a fallback if the file doesn't exist yet
         if [ -f mcpelauncher.commit ]; then
           echo "mcpelauncher-ref=$(cat mcpelauncher.commit)" >> $GITHUB_OUTPUT
         else

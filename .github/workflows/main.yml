@@ -20,22 +20,28 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Install Dependencies (vcpkg)
-        # Replacing the complex manual builds from the old macOS logic
         run: |
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
 
-      - name: Clone MCPELauncher Source
+      - name: Clone and Checkout MCPELauncher
         shell: pwsh
         run: |
-          git clone https://github.com/minecraft-linux/mcpelauncher-manifest --recursive -b ${{ inputs.mcpelauncher-ref }} source/mcpelauncher
+          # 1. Clone the repo without specifying a branch yet
+          git clone https://github.com/minecraft-linux/mcpelauncher-manifest source/mcpelauncher --recursive
+          cd source/mcpelauncher
+          
+          # 2. Checkout the specific commit/ref passed from ci.yml
+          git checkout ${{ inputs.mcpelauncher-ref }}
+          
+          # 3. Update submodules again in case the checkout changed them
+          git submodule update --init --recursive
 
       - name: Configure CMake
         shell: pwsh
         run: |
           mkdir build
-          # The FIX: Point -S (source) to the directory where we cloned the repo
           cmake -S source/mcpelauncher -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_XAL=ON `
