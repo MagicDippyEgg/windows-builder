@@ -1,0 +1,52 @@
+name: Windows Build
+on:
+  workflow_call:
+    inputs:
+      mcpelauncher-ref:
+        type: string
+        default: 'ng'
+      publish:
+        type: boolean
+        default: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup CMake
+        uses: jasonbecker/setup-cmake@v1
+
+      - name: Install Dependencies (vcpkg)
+        run: |
+          vcpkg install openssl:x64-windows
+          vcpkg install protobuf:x64-windows
+          vcpkg install zlib:x64-windows
+
+      - name: Clone MCPELauncher
+        shell: pwsh
+        run: |
+          git clone https://github.com/minecraft-linux/mcpelauncher-manifest --recursive -b ${{ inputs.mcpelauncher-ref }} source/mcpelauncher
+
+      - name: Configure and Build
+        shell: pwsh
+        run: |
+          mkdir build
+          cd build
+          # We use -A x64 for 64-bit Windows builds
+          cmake ../source/mcpelauncher `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DENABLE_XAL=ON `
+            -DDCMAKE_TOOLCHAIN_FILE=C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake
+          cmake --build . --config Release -j 4
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcpelauncher-windows-x64
+          path: build/Release/
