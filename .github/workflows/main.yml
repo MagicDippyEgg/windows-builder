@@ -37,9 +37,6 @@ jobs:
           vcpkg install libpng:x64-windows
           vcpkg install angle:x64-windows
           vcpkg install sdl2:x64-windows
-          # FIX 1: Install dlfcn-win32 (compatibility layer for dlfcn.h)
-          vcpkg install dlfcn-win32:x64-windows
-          # FIX 2: Install libzip (compatibility for zip_archive.h)
           vcpkg install libzip:x64-windows
 
       - name: Clone and Checkout MCPELauncher
@@ -51,28 +48,60 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      - name: Patch Linux Code for Windows
+      - name: Apply Mega Windows Patches
         shell: pwsh
         run: |
-          # 1. Stub linux-gamepad (as before)
+          # 1. Create a dummy unistd.h (Missing on Windows)
+          $incDir = "source/compat-include"
+          New-Item -ItemType Directory -Force -Path $incDir | Out-Null
+          Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>"
+
+          # 2. Patch eglut to stop trying to build X11 (Linux) on Windows
+          $eglutCMake = "source/eglut/CMakeLists.txt"
+          if (Test-Path $eglutCMake) {
+             $content = Get-Content $eglutCMake
+             # Remove lines that refer to _x11.c files
+             $newContent = $content | Where-Object { $_ -notmatch "_x11\.c" -and $_ -notmatch "xinput\.c" }
+             $newContent | Set-Content $eglutCMake
+          }
+
+          # 3. Fix localtime_r in Logger (Windows uses localtime_s)
+          $logFile = "source/logger/src/log.cpp"
+          if (Test-Path $logFile) {
+             $c = Get-Content $logFile -Raw
+             # Add a helper macro for Windows
+             $fix = "#if defined(_WIN32)`n#include <time.h>`ninline struct tm* localtime_r(const time_t* t, struct tm* r) { localtime_s(r, t); return r; }`n#endif`n"
+             Set-Content -Path $logFile -Value ($fix + $c)
+          }
+
+          # 4. Stub mcpelauncher-linker (The Android Bionic Linker)
+          # We replace the complex build logic with a simple dummy library so the UI can link against it.
+          $linkerCMake = "source/mcpelauncher-linker/CMakeLists.txt"
+          $stubContent = @"
+          cmake_minimum_required(VERSION 3.10)
+          project(mcpelauncher-linker)
+          
+          # Create a dummy source file
+          file(WRITE "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp" "void linker_stub() {}")
+          
+          # Create the libraries the UI expects
+          add_library(mcpelauncher-linker STATIC "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp")
+          add_library(mcpelauncher-linker-core STATIC "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp")
+          
+          # Add include directories so others don't complain about missing headers
+          target_include_directories(mcpelauncher-linker PUBLIC include)
+          target_include_directories(mcpelauncher-linker-core PUBLIC core/include)
+          "@
+          Set-Content -Path $linkerCMake -Value $stubContent
+
+          # 5. Stub linux-gamepad (as before)
           if (Test-Path "source/linux-gamepad/CMakeLists.txt") {
-              Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed for Windows build"
+              Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed"
           }
-
-          # 2. Stub the Linux EPoll handler (The Cause of sys/eventfd.h error)
-          # We empty this file so the compiler has nothing to complain about.
-          $epollFile = "source/simple-ipc/src/unix/epoll_io_handler.cpp"
-          if (Test-Path $epollFile) {
-              Set-Content -Path $epollFile -Value "// Stubbed for Windows build"
-              Write-Host "Stubbed Linux epoll handler"
-          }
-
-          # 3. Patch CMake versions (as before)
-          $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
-          foreach ($file in $files) {
-              $content = Get-Content $file.FullName
-              $newContent = $content -replace 'cmake_minimum_required\s*\(\s*VERSION\s+[0-9.]+\s*\)', 'cmake_minimum_required(VERSION 3.10)'
-              $newContent | Set-Content $file.FullName
+          
+          # 6. Force Patch CMake versions (as before)
+          Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt" | ForEach-Object {
+            (Get-Content $_.FullName) -replace 'cmake_minimum_required\s*\(\s*VERSION\s+[0-9.]+\s*\)', 'cmake_minimum_required(VERSION 3.10)' | Set-Content $_.FullName
           }
 
       - name: Configure CMake
@@ -80,12 +109,13 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # Added -DENABLE_VS_BUILD=ON just in case simple-ipc checks for it
+          # We add the compat-include folder so it finds our fake unistd.h
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir"
+            "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir" `
+            "-DCMAKE_CXX_FLAGS=/I $PWD/source/compat-include"
 
       - name: Build Project
         run: cmake --build build --config Release -j 4
