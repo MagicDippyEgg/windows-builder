@@ -47,15 +47,17 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      - name: Force Patch CMake & Remove Linux Modules
+      - name: Patch CMake & Stub Linux Gamepad
         shell: pwsh
         run: |
-          # FIX 1: Remove the linux-gamepad directory so CMake doesn't try to build it
-          if (Test-Path "source/linux-gamepad") { 
-              Remove-Item -Recurse -Force "source/linux-gamepad" 
+          # FIX: Instead of deleting, we "stub" the linux-gamepad build file
+          # This makes CMake think the module loaded correctly but does nothing.
+          if (Test-Path "source/linux-gamepad/CMakeLists.txt") {
+              Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed for Windows build"
+              Write-Host "Successfully stubbed linux-gamepad"
           }
 
-          # FIX 2: Patch CMake versions as before
+          # Patching main CMake versions
           $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $files) {
               $content = Get-Content $file.FullName
@@ -68,7 +70,6 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # Cleaned up flags to avoid "unused variable" warnings
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
