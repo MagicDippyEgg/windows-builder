@@ -38,6 +38,8 @@ jobs:
           vcpkg install angle:x64-windows
           vcpkg install sdl2:x64-windows
           vcpkg install libzip:x64-windows
+          # FIX: Added pthreads for Windows to resolve missing pthread.h errors
+          vcpkg install pthreads:x64-windows
 
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
@@ -51,57 +53,83 @@ jobs:
       - name: Apply Mega Windows Patches
         shell: pwsh
         run: |
-          # 1. Create a dummy unistd.h (Missing on Windows)
           $incDir = "source/compat-include"
-          New-Item -ItemType Directory -Force -Path $incDir | Out-Null
-          Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>"
+          $sysDir = "$incDir/sys"
+          New-Item -ItemType Directory -Force -Path $sysDir | Out-Null
+          
+          # FIX: Global Compatibility Header (Handling __attribute__ and ssize_t)
+          # We force include this via CMake so it applies to ALL files without editing them individually.
+          $compatDefs = @"
+          #pragma once
+          #if defined(_MSC_VER)
+            #define __attribute__(x)
+            #include <stddef.h>
+            #include <basetsd.h>
+            typedef SSIZE_T ssize_t;
+          #endif
+          "@
+          Set-Content -Path "$incDir/compat_defs.h" -Value $compatDefs
 
-          # 2. Patch eglut to stop trying to build X11 (Linux) on Windows
+          # FIX: unistd.h stub (Commonly missing on Windows)
+          Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>`n#include <direct.h>"
+
+          # FIX: sys/time.h stub (Fixes eglut compilation)
+          Set-Content -Path "$sysDir/time.h" -Value "#pragma once`n#include <time.h>`nstruct timezone { int tz_minuteswest; int tz_dsttime; };"
+
+          # FIX: sys/wait.h stub
+          Set-Content -Path "$sysDir/wait.h" -Value "#pragma once"
+
+          # FIX: pwd.h stub
+          Set-Content -Path "$incDir/pwd.h" -Value "#pragma once"
+
+          # FIX: sys/mman.h stub (Memory mapping)
+          Set-Content -Path "$sysDir/mman.h" -Value "#pragma once`n#define PROT_READ 1`n#define PROT_WRITE 2`n#define MAP_PRIVATE 2`n#define MAP_FAILED ((void*)-1)`n"
+
+          # FIX: sys/socket.h stub (Redirects to Winsock2)
+          Set-Content -Path "$sysDir/socket.h" -Value "#pragma once`n#include <winsock2.h>`n#include <ws2tcpip.h>"
+
+          # Patch eglut to remove Linux-specific files
           $eglutCMake = "source/eglut/CMakeLists.txt"
           if (Test-Path $eglutCMake) {
              $content = Get-Content $eglutCMake
-             # Remove lines that refer to _x11.c files
-             $newContent = $content | Where-Object { $_ -notmatch "_x11\.c" -and $_ -notmatch "xinput\.c" }
+             $newContent = $content | Where-Object { $_ -notmatch "_x11.c" -and $_ -notmatch "xinput.c" }
              $newContent | Set-Content $eglutCMake
           }
 
-          # 3. Fix localtime_r in Logger (Windows uses localtime_s)
+          # Fix localtime_r in Logger (Windows has localtime_s)
           $logFile = "source/logger/src/log.cpp"
           if (Test-Path $logFile) {
              $c = Get-Content $logFile -Raw
-             # Add a helper macro for Windows
              $fix = "#if defined(_WIN32)`n#include <time.h>`ninline struct tm* localtime_r(const time_t* t, struct tm* r) { localtime_s(r, t); return r; }`n#endif`n"
              Set-Content -Path $logFile -Value ($fix + $c)
           }
 
-          # 4. Stub mcpelauncher-linker (The Android Bionic Linker)
-          # We replace the complex build logic with a simple dummy library so the UI can link against it.
+          # Stub mcpelauncher-linker
           $linkerCMake = "source/mcpelauncher-linker/CMakeLists.txt"
           $stubContent = @"
           cmake_minimum_required(VERSION 3.10)
           project(mcpelauncher-linker)
-          
-          # Create a dummy source file
           file(WRITE "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp" "void linker_stub() {}")
-          
-          # Create the libraries the UI expects
           add_library(mcpelauncher-linker STATIC "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp")
           add_library(mcpelauncher-linker-core STATIC "`{CMAKE_CURRENT_BINARY_DIR}/dummy_linker.cpp")
-          
-          # Add include directories so others don't complain about missing headers
           target_include_directories(mcpelauncher-linker PUBLIC include)
           target_include_directories(mcpelauncher-linker-core PUBLIC core/include)
           "@
           Set-Content -Path $linkerCMake -Value $stubContent
 
-          # 5. Stub linux-gamepad (as before)
+          # Stub linux-gamepad
           if (Test-Path "source/linux-gamepad/CMakeLists.txt") {
               Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed"
           }
           
-          # 6. Force Patch CMake versions (as before)
+          # Fix CMake versions
           Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt" | ForEach-Object {
-            (Get-Content $_.FullName) -replace 'cmake_minimum_required\s*\(\s*VERSION\s+[0-9.]+\s*\)', 'cmake_minimum_required(VERSION 3.10)' | Set-Content $_.FullName
+            (Get-Content $_.FullName) -replace 'cmake_minimum_requireds*(s*VERSIONs+[0-9.]+s*)', 'cmake_minimum_required(VERSION 3.10)' | Set-Content $_.FullName
+          }
+          
+          # FIX: Clean up unsupported GCC flags
+          Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt" | ForEach-Object {
+             (Get-Content $_.FullName) -replace '-fno-delete-null-pointer-checks', '' | Set-Content $_.FullName
           }
 
       - name: Configure CMake
@@ -109,13 +137,13 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # We add the compat-include folder so it finds our fake unistd.h
+          # FIX: Added /FI compat_defs.h to force include our compatibility macros
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir" `
-            "-DCMAKE_CXX_FLAGS=/I $PWD/source/compat-include"
+            "-DCMAKE_CXX_FLAGS=/I $PWD/source/compat-include /FI $PWD/source/compat-include/compat_defs.h"
 
       - name: Build Project
         run: cmake --build build --config Release -j 4
