@@ -37,6 +37,10 @@ jobs:
           vcpkg install libpng:x64-windows
           vcpkg install angle:x64-windows
           vcpkg install sdl2:x64-windows
+          # FIX 1: Install dlfcn-win32 (compatibility layer for dlfcn.h)
+          vcpkg install dlfcn-win32:x64-windows
+          # FIX 2: Install libzip (compatibility for zip_archive.h)
+          vcpkg install libzip:x64-windows
 
       - name: Clone and Checkout MCPELauncher
         shell: pwsh
@@ -47,17 +51,23 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      - name: Patch CMake & Stub Linux Gamepad
+      - name: Patch Linux Code for Windows
         shell: pwsh
         run: |
-          # FIX: Instead of deleting, we "stub" the linux-gamepad build file
-          # This makes CMake think the module loaded correctly but does nothing.
+          # 1. Stub linux-gamepad (as before)
           if (Test-Path "source/linux-gamepad/CMakeLists.txt") {
               Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed for Windows build"
-              Write-Host "Successfully stubbed linux-gamepad"
           }
 
-          # Patching main CMake versions
+          # 2. Stub the Linux EPoll handler (The Cause of sys/eventfd.h error)
+          # We empty this file so the compiler has nothing to complain about.
+          $epollFile = "source/simple-ipc/src/unix/epoll_io_handler.cpp"
+          if (Test-Path $epollFile) {
+              Set-Content -Path $epollFile -Value "// Stubbed for Windows build"
+              Write-Host "Stubbed Linux epoll handler"
+          }
+
+          # 3. Patch CMake versions (as before)
           $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $files) {
               $content = Get-Content $file.FullName
@@ -70,6 +80,7 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
+          # Added -DENABLE_VS_BUILD=ON just in case simple-ipc checks for it
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
