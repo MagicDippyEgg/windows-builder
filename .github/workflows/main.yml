@@ -31,7 +31,6 @@ jobs:
       - name: Install Dependencies (vcpkg)
         shell: pwsh
         run: |
-          # Added sdl2 for Windows controller support
           vcpkg install openssl:x64-windows
           vcpkg install protobuf:x64-windows
           vcpkg install zlib:x64-windows
@@ -48,9 +47,15 @@ jobs:
           git checkout ${{ inputs.mcpelauncher-ref }}
           git submodule update --init --recursive
 
-      - name: Force Patch CMake Versions
+      - name: Force Patch CMake & Remove Linux Modules
         shell: pwsh
         run: |
+          # FIX 1: Remove the linux-gamepad directory so CMake doesn't try to build it
+          if (Test-Path "source/linux-gamepad") { 
+              Remove-Item -Recurse -Force "source/linux-gamepad" 
+          }
+
+          # FIX 2: Patch CMake versions as before
           $files = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $files) {
               $content = Get-Content $file.FullName
@@ -63,15 +68,10 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # FIX: We added -DBUILD_GAMEPAD=OFF (to skip Linux gamepad code)
-          # We added -DENABLE_SDL_INPUT=ON (to use Windows-friendly controllers)
+          # Cleaned up flags to avoid "unused variable" warnings
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
-            -DENABLE_XAL=ON `
-            -DENABLE_EGL=ON `
-            -DBUILD_GAMEPAD=OFF `
             -DENABLE_SDL_INPUT=ON `
-            -DSDL2_DIR="$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/share/sdl2" `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir"
 
