@@ -58,7 +58,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $sysDir | Out-Null
           
           # --- Header Stubs ---
-          # Global compatibility definitions to fix __attribute__ and types
           $compatDefs = @"
           #pragma once
           #if defined(_MSC_VER)
@@ -69,8 +68,6 @@ jobs:
           #endif
           "@
           Set-Content -Path "$incDir/compat_defs.h" -Value $compatDefs
-          
-          # Stub for unistd.h, sys/time.h, etc.
           Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>`n#include <direct.h>"
           Set-Content -Path "$sysDir/time.h" -Value "#pragma once`n#include <time.h>`nstruct timezone { int tz_minuteswest; int tz_dsttime; };"
           Set-Content -Path "$sysDir/wait.h" -Value "#pragma once"
@@ -78,7 +75,7 @@ jobs:
           Set-Content -Path "$sysDir/mman.h" -Value "#pragma once`n#define PROT_READ 1`n#define PROT_WRITE 2`n#define MAP_PRIVATE 2`n#define MAP_FAILED ((void*)-1)`n"
           Set-Content -Path "$sysDir/socket.h" -Value "#pragma once`n#include <winsock2.h>`n#include <ws2tcpip.h>"
 
-          # --- Eglut Patch (Remove X11 references) ---
+          # --- Eglut Patch ---
           $eglutCMake = "source/eglut/CMakeLists.txt"
           if (Test-Path $eglutCMake) {
              $content = Get-Content $eglutCMake
@@ -86,7 +83,7 @@ jobs:
              $newContent | Set-Content $eglutCMake
           }
 
-          # --- Logger Patch (localtime_r) ---
+          # --- Logger Patch ---
           $logFile = "source/logger/src/log.cpp"
           if (Test-Path $logFile) {
              $c = Get-Content $logFile -Raw
@@ -112,40 +109,43 @@ jobs:
           }
 
           # --- FIX: Robust CMake Syntax Patching ---
-          # We iterate all CMakeLists.txt files.
-          # 1. We use System.IO.File to safely read/write (avoiding PowerShell text encoding issues).
-          # 2. We aggressively REMOVE any existing cmake_minimum_required(...) block using a regex.
-          # 3. We PREPEND a clean 'cmake_minimum_required(VERSION 3.10)' to the top.
+          # Iterates all CMakeLists.txt and performs a safe IN-PLACE replacement.
+          # We use a broad regex 'cmake_minimum_required[sS]*?)' to ensure we consume 
+          # the entire command including the closing parenthesis, regardless of spaces/newlines.
           
           $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $cmakeFiles) {
-              # Read RAW content using .NET to preserve line endings/encoding
+              # Read using .NET to handle encodings reliably
               $content = [System.IO.File]::ReadAllText($file.FullName)
               
-              # Remove old directive. 
-              # Regex explanation: Match command, whitespace, opening paren, 
-              # any char (non-greedy) including newlines, until closing paren.
-              $content = [System.Text.RegularExpressions.Regex]::Replace(
-                  $content, 
-                  'cmake_minimum_requireds*([sS]*?)', 
-                  '', 
-                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-              )
+              # Regex to match cmake_minimum_required AND its arguments/parentheses
+              $pattern = 'cmake_minimum_required[sS]*?)'
+              $replacement = 'cmake_minimum_required(VERSION 3.10)'
+              
+              # Check if it exists to decide whether to replace or prepend
+              if ($content -match $pattern) {
+                  $content = [System.Text.RegularExpressions.Regex]::Replace(
+                      $content, 
+                      $pattern, 
+                      $replacement, 
+                      [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+                  )
+              } else {
+                  $content = "$replacement`n" + $content
+              }
               
               # Remove unsupported GCC flags
               $content = $content.Replace('-fno-delete-null-pointer-checks', '')
               
-              # Prepend the correct version directive
-              $content = "cmake_minimum_required(VERSION 3.10)`n" + $content
-              
-              # Write back safely
-              [System.IO.File]::WriteAllText($file.FullName, $content)
+              # Write back using UTF-8 to ensure no BOM/encoding issues for CMake
+              [System.IO.File]::WriteAllText($file.FullName, $content, [System.Text.Encoding]::UTF8)
           }
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          if (!(Test-Path "build")) { mkdir build }
+          if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+          mkdir build
           
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
