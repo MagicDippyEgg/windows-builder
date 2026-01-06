@@ -109,21 +109,27 @@ jobs:
           }
 
           # --- FIX: Robust CMake Syntax Patching ---
-          # Iterates all CMakeLists.txt and performs a safe IN-PLACE replacement.
-          # We use a broad regex 'cmake_minimum_required[sS]*?)' to ensure we consume 
-          # the entire command including the closing parenthesis, regardless of spaces/newlines.
+          # We use character classes [(] and [)] to match parentheses safely without escaping.
+          # We use \s (double backslash) to ensure the regex engine gets the whitespace class.
+          # We use (?s) SingleLine mode so . matches newlines.
           
           $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $cmakeFiles) {
-              # Read using .NET to handle encodings reliably
               $content = [System.IO.File]::ReadAllText($file.FullName)
               
-              # Regex to match cmake_minimum_required AND its arguments/parentheses
-              $pattern = 'cmake_minimum_required[sS]*?)'
+              # Regex: (?s) = Dot matches newline
+              # cmake_minimum_required
+              # \s* = Optional whitespace (double escaped for safety)
+              # [(] = Literal open paren
+              # .*? = Content (non-greedy)
+              # [)] = Literal close paren
+              $pattern = '(?s)cmake_minimum_required\s*[(].*?[)]'
               $replacement = 'cmake_minimum_required(VERSION 3.10)'
               
-              # Check if it exists to decide whether to replace or prepend
-              if ($content -match $pattern) {
+              # If the file contains the directive (checking via simple regex matching), Replace it.
+              # Else, Prepend it.
+              # Note: We use -match with a simpler pattern just to check existence.
+              if ($content -match 'cmake_minimum_required') {
                   $content = [System.Text.RegularExpressions.Regex]::Replace(
                       $content, 
                       $pattern, 
@@ -134,10 +140,7 @@ jobs:
                   $content = "$replacement`n" + $content
               }
               
-              # Remove unsupported GCC flags
               $content = $content.Replace('-fno-delete-null-pointer-checks', '')
-              
-              # Write back using UTF-8 to ensure no BOM/encoding issues for CMake
               [System.IO.File]::WriteAllText($file.FullName, $content, [System.Text.Encoding]::UTF8)
           }
 
