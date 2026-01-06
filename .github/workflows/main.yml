@@ -58,17 +58,84 @@ jobs:
           New-Item -ItemType Directory -Force -Path $sysDir | Out-Null
           
           # --- Header Stubs ---
+          
+          # 1. Compat Definitions (Types, Stats, IO)
+          # We force include <sys/stat.h> and map POSIX 64-bit stat structs/functions to Windows equivalents.
           $compatDefs = @"
           #pragma once
           #if defined(_MSC_VER)
             #define __attribute__(x)
             #include <stddef.h>
             #include <basetsd.h>
+            #include <sys/stat.h>
+            #include <sys/types.h>
+            #include <io.h>
+            
             typedef SSIZE_T ssize_t;
+            
+            // Map POSIX 64-bit stat types to MSVC
+            #define stat64 _stat64
+            #define fstat64 _fstat64
+            #define lstat64 _stat64  // Windows lacks true lstat, fallback to stat
+            
+            // Map File IO functions
+            #define ftruncate _chsize
+            #define ftruncate64 _chsize_s
+            #define lseek64 _lseeki64
+            #define fileno _fileno
+            #define isatty _isatty
+            
+            // Dummy macros for missing file modes
+            #ifndef S_ISLNK
+            #define S_ISLNK(m) 0
+            #endif
           #endif
           "@
           Set-Content -Path "$incDir/compat_defs.h" -Value $compatDefs
-          Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>`n#include <direct.h>"
+
+          # 2. unistd.h (Sysconf Constants)
+          # We add standard _SC_* constants to satisfy sysconf.cpp compilation.
+          $unistdContent = @"
+          #pragma once
+          #include <io.h>
+          #include <process.h>
+          #include <direct.h>
+          
+          #define _SC_ARG_MAX 0
+          #define _SC_CLK_TCK 1
+          #define _SC_PAGESIZE 2
+          #define _SC_PHYS_PAGES 3
+          #define _SC_AVPHYS_PAGES 4
+          #define _SC_NPROCESSORS_CONF 5
+          #define _SC_NPROCESSORS_ONLN 6
+          
+          // Add dummy defines for other constants seen in error logs
+          #define _SC_BC_BASE_MAX 100
+          #define _SC_BC_DIM_MAX 101
+          #define _SC_BC_SCALE_MAX 102
+          #define _SC_BC_STRING_MAX 103
+          #define _SC_CHILD_MAX 104
+          #define _SC_COLL_WEIGHTS_MAX 105
+          #define _SC_EXPR_NEST_MAX 106
+          #define _SC_LINE_MAX 107
+          
+          // Prototype for sysconf
+          long sysconf(int name);
+          "@
+          Set-Content -Path "$incDir/unistd.h" -Value $unistdContent
+
+          # 3. poll.h Stub (Maps to WSAPoll)
+          # This handles the missing poll.h error.
+          $pollContent = @"
+          #pragma once
+          #include <winsock2.h>
+          
+          // WSAPoll is the Windows equivalent. 
+          // WSAPOLLFD structure is compatible with standard pollfd.
+          #define poll(fds, nfds, timeout) WSAPoll(fds, nfds, timeout)
+          "@
+          Set-Content -Path "$incDir/poll.h" -Value $pollContent
+
           Set-Content -Path "$sysDir/time.h" -Value "#pragma once`n#include <time.h>`nstruct timezone { int tz_minuteswest; int tz_dsttime; };"
           Set-Content -Path "$sysDir/wait.h" -Value "#pragma once"
           Set-Content -Path "$incDir/pwd.h" -Value "#pragma once"
@@ -109,26 +176,12 @@ jobs:
           }
 
           # --- FIX: Robust CMake Syntax Patching ---
-          # We use character classes [(] and [)] to match parentheses safely without escaping.
-          # We use \s (double backslash) to ensure the regex engine gets the whitespace class.
-          # We use (?s) SingleLine mode so . matches newlines.
-          
           $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $cmakeFiles) {
               $content = [System.IO.File]::ReadAllText($file.FullName)
-              
-              # Regex: (?s) = Dot matches newline
-              # cmake_minimum_required
-              # \s* = Optional whitespace (double escaped for safety)
-              # [(] = Literal open paren
-              # .*? = Content (non-greedy)
-              # [)] = Literal close paren
               $pattern = '(?s)cmake_minimum_required\s*[(].*?[)]'
               $replacement = 'cmake_minimum_required(VERSION 3.10)'
               
-              # If the file contains the directive (checking via simple regex matching), Replace it.
-              # Else, Prepend it.
-              # Note: We use -match with a simpler pattern just to check existence.
               if ($content -match 'cmake_minimum_required') {
                   $content = [System.Text.RegularExpressions.Regex]::Replace(
                       $content, 
@@ -150,6 +203,7 @@ jobs:
           if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
           mkdir build
           
+          # NOTE: /FI forces inclusion of compat_defs.h in EVERY source file.
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
