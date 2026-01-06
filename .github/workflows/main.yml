@@ -56,7 +56,7 @@ jobs:
           $sysDir = "$incDir/sys"
           New-Item -ItemType Directory -Force -Path $sysDir | Out-Null
           
-          # 1. Compatibility Header (Attributes & types)
+          # --- Header Stubs (Fixed in previous step) ---
           $compatDefs = @"
           #pragma once
           #if defined(_MSC_VER)
@@ -67,8 +67,6 @@ jobs:
           #endif
           "@
           Set-Content -Path "$incDir/compat_defs.h" -Value $compatDefs
-
-          # 2. Stubs for missing headers
           Set-Content -Path "$incDir/unistd.h" -Value "#pragma once`n#include <io.h>`n#include <process.h>`n#include <direct.h>"
           Set-Content -Path "$sysDir/time.h" -Value "#pragma once`n#include <time.h>`nstruct timezone { int tz_minuteswest; int tz_dsttime; };"
           Set-Content -Path "$sysDir/wait.h" -Value "#pragma once"
@@ -76,7 +74,7 @@ jobs:
           Set-Content -Path "$sysDir/mman.h" -Value "#pragma once`n#define PROT_READ 1`n#define PROT_WRITE 2`n#define MAP_PRIVATE 2`n#define MAP_FAILED ((void*)-1)`n"
           Set-Content -Path "$sysDir/socket.h" -Value "#pragma once`n#include <winsock2.h>`n#include <ws2tcpip.h>"
 
-          # 3. Patch eglut (Remove X11)
+          # --- Eglut Patch ---
           $eglutCMake = "source/eglut/CMakeLists.txt"
           if (Test-Path $eglutCMake) {
              $content = Get-Content $eglutCMake
@@ -84,7 +82,7 @@ jobs:
              $newContent | Set-Content $eglutCMake
           }
 
-          # 4. Fix localtime_r in Logger
+          # --- Logger Patch ---
           $logFile = "source/logger/src/log.cpp"
           if (Test-Path $logFile) {
              $c = Get-Content $logFile -Raw
@@ -92,7 +90,7 @@ jobs:
              Set-Content -Path $logFile -Value ($fix + $c)
           }
 
-          # 5. Stub Linker
+          # --- Linker Stub ---
           $linkerCMake = "source/mcpelauncher-linker/CMakeLists.txt"
           $stubContent = @"
           cmake_minimum_required(VERSION 3.10)
@@ -105,21 +103,38 @@ jobs:
           "@
           Set-Content -Path $linkerCMake -Value $stubContent
 
-          # 6. Stub Linux Gamepad
           if (Test-Path "source/linux-gamepad/CMakeLists.txt") {
               Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed"
           }
 
-          # 7. FIX: Force CMake Version Update (Aggressive Regex)
-          # The previous regex failed on lines like 'cmake_minimum_required(VERSION 2.8 FATAL_ERROR)'
-          # This updated version captures everything inside the parentheses.
-          Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt" | ForEach-Object {
-            $c = Get-Content $_.FullName
-            # Replace the entire cmake_minimum_required(...) command with version 3.10
-            $c = $c -replace 'cmake_minimum_requireds*([^)]+)', 'cmake_minimum_required(VERSION 3.10)'
-            # Also clean up unsupported GCC flags if they exist in the file
-            $c = $c -replace '-fno-delete-null-pointer-checks', ''
-            Set-Content -Path $_.FullName -Value $c
+          # --- FIX: Robust CMake Syntax Patching ---
+          # Uses [regex]::Replace on Raw content to safely handle multi-line commands
+          # and prevent "Parse error: expected command name, got ')'"
+          
+          $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
+          foreach ($file in $cmakeFiles) {
+              # Read RAW to preserve newlines for regex matching
+              $content = Get-Content -Path $file.FullName -Raw
+              
+              # Regex: cmake_minimum_required followed by ( ... )
+              # [^)]+ matches arguments including newlines (since ) is not newline)
+              # This safely replaces the whole block including the closing parenthesis
+              $pattern = 'cmake_minimum_requireds*([^)]+)'
+              $replacement = 'cmake_minimum_required(VERSION 3.10)'
+              
+              # Use .NET Regex for reliability
+              $content = [System.Text.RegularExpressions.Regex]::Replace(
+                  $content, 
+                  $pattern, 
+                  $replacement, 
+                  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+              )
+              
+              # Clean up unsupported flags
+              $content = $content.Replace('-fno-delete-null-pointer-checks', '')
+              
+              # Force UTF8 write to avoid BOM issues if possible, though VS2022 handles BOM fine
+              Set-Content -Path $file.FullName -Value $content -Encoding UTF8
           }
 
       - name: Configure CMake
@@ -127,8 +142,6 @@ jobs:
         run: |
           if (!(Test-Path "build")) { mkdir build }
           
-          # Added -DCMAKE_POLICY_DEFAULT_CMP0000=OLD as a safety net, 
-          # though the patch above should resolve the root cause.
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
