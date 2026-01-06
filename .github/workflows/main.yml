@@ -52,97 +52,168 @@ jobs:
       - name: Apply Mega Windows Patches
         shell: pwsh
         run: |
-          # --- Create Includes Directory ---
+          # --- Directories ---
           $incDir = "source/compat-include"
           $sysDir = "$incDir/sys"
           New-Item -ItemType Directory -Force -Path $sysDir | Out-Null
           
-          # --- Header Stubs ---
-          
-          # 1. Compat Definitions (Types, Stats, IO)
-          # We force include <sys/stat.h> and map POSIX 64-bit stat structs/functions to Windows equivalents.
+          # --- 1. Global Compatibility Definitions (The "Fix Everything" Header) ---
+          # This header is FORCE INCLUDED in every compilation unit.
           $compatDefs = @"
           #pragma once
           #if defined(_MSC_VER)
             #define __attribute__(x)
+            #define _CRT_SECURE_NO_WARNINGS
+            #define _WINSOCK_DEPRECATED_NO_WARNINGS
+            
             #include <stddef.h>
             #include <basetsd.h>
-            #include <sys/stat.h>
             #include <sys/types.h>
+            #include <sys/stat.h>
             #include <io.h>
+            #include <direct.h>
             
             typedef SSIZE_T ssize_t;
             
-            // Map POSIX 64-bit stat types to MSVC
+            // Fix missing stat64 and friends
             #define stat64 _stat64
             #define fstat64 _fstat64
-            #define lstat64 _stat64  // Windows lacks true lstat, fallback to stat
+            #define lstat64 _stat64  // Windows has no symlinks in this context
             
-            // Map File IO functions
+            // Fix file IO
             #define ftruncate _chsize
             #define ftruncate64 _chsize_s
             #define lseek64 _lseeki64
             #define fileno _fileno
             #define isatty _isatty
+            #define access _access
+            #define F_OK 0
+            #define X_OK 0 // Windows access() doesn't really check exec permission
+            #define PATH_MAX 260
             
-            // Dummy macros for missing file modes
+            // Fix missing S_ macros
+            #ifndef S_ISDIR
+            #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+            #endif
             #ifndef S_ISLNK
             #define S_ISLNK(m) 0
+            #endif
+            
+            // Stubs for user/group functions (Windows doesn't use these like Linux)
+            #define getuid() (0)
+            #define getpwuid_r(uid, pwd, buf, len, res) (NULL)
+            #define readlink(path, buf, size) (-1)
+            
+            // Fix strrchr ambiguity (const vs non-const)
+            #ifdef __cplusplus
+            extern "C++" {
+                inline char* strrchr_cast(char* s, int c) { return const_cast<char*>(strrchr(s, c)); }
+            }
+            #define strrchr strrchr_cast
             #endif
           #endif
           "@
           Set-Content -Path "$incDir/compat_defs.h" -Value $compatDefs
 
-          # 2. unistd.h (Sysconf Constants)
-          # We add standard _SC_* constants to satisfy sysconf.cpp compilation.
-          $unistdContent = @"
+          # --- 2. Network & System Headers ---
+          
+          # poll.h -> WSAPoll
+          $pollH = @"
+          #pragma once
+          #include <winsock2.h>
+          typedef WSAPOLLFD pollfd;
+          #define poll(fds, nfds, timeout) WSAPoll(fds, nfds, timeout)
+          "@
+          Set-Content -Path "$incDir/poll.h" -Value $pollH
+
+          # sys/un.h -> Unix Sockets (Stubbed)
+          Set-Content -Path "$sysDir/un.h" -Value "#pragma once`n#include <winsock2.h>`nstruct sockaddr_un { short sun_family; char sun_path[108]; };"
+          
+          # netdb.h -> Winsock
+          Set-Content -Path "$incDir/netdb.h" -Value "#pragma once`n#include <winsock2.h>`n#include <ws2tcpip.h>"
+          
+          # sys/utsname.h -> uname stub
+          $utsnameH = @"
+          #pragma once
+          struct utsname {
+            char sysname[65]; char nodename[65]; char release[65];
+            char version[65]; char machine[65];
+          };
+          static int uname(struct utsname* n) { return -1; }
+          "@
+          Set-Content -Path "$sysDir/utsname.h" -Value $utsnameH
+
+          # unistd.h -> Sysconf constants
+          $unistdH = @"
           #pragma once
           #include <io.h>
           #include <process.h>
-          #include <direct.h>
-          
           #define _SC_ARG_MAX 0
-          #define _SC_CLK_TCK 1
-          #define _SC_PAGESIZE 2
-          #define _SC_PHYS_PAGES 3
-          #define _SC_AVPHYS_PAGES 4
-          #define _SC_NPROCESSORS_CONF 5
-          #define _SC_NPROCESSORS_ONLN 6
-          
-          // Add dummy defines for other constants seen in error logs
-          #define _SC_BC_BASE_MAX 100
-          #define _SC_BC_DIM_MAX 101
-          #define _SC_BC_SCALE_MAX 102
-          #define _SC_BC_STRING_MAX 103
-          #define _SC_CHILD_MAX 104
-          #define _SC_COLL_WEIGHTS_MAX 105
-          #define _SC_EXPR_NEST_MAX 106
-          #define _SC_LINE_MAX 107
-          
-          // Prototype for sysconf
-          long sysconf(int name);
+          #define _SC_CLK_TCK 100
+          #define _SC_PAGESIZE 4096
+          #define _SC_PHYS_PAGES 1
+          #define _SC_NPROCESSORS_ONLN 1
+          #define _SC_GETPW_R_SIZE_MAX 1024
           "@
-          Set-Content -Path "$incDir/unistd.h" -Value $unistdContent
+          Set-Content -Path "$incDir/unistd.h" -Value $unistdH
 
-          # 3. poll.h Stub (Maps to WSAPoll)
-          # This handles the missing poll.h error.
-          $pollContent = @"
+          # dirent.h -> Minimal Windows implementation
+          $direntH = @"
           #pragma once
-          #include <winsock2.h>
+          #include <windows.h>
+          #include <stdio.h>
           
-          // WSAPoll is the Windows equivalent. 
-          // WSAPOLLFD structure is compatible with standard pollfd.
-          #define poll(fds, nfds, timeout) WSAPoll(fds, nfds, timeout)
+          struct dirent { char d_name[260]; int d_type; };
+          typedef struct DIR DIR;
+          #define DT_DIR 4
+          #define DT_REG 8
+          
+          struct DIR {
+              HANDLE hFind;
+              WIN32_FIND_DATA data;
+              struct dirent ent;
+              int first;
+          };
+          
+          static DIR* opendir(const char* dir) {
+              char path[260]; snprintf(path, sizeof(path), "%s\\*", dir);
+              DIR* d = (DIR*)calloc(1, sizeof(DIR));
+              d->hFind = FindFirstFileA(path, &d->data);
+              if (d->hFind == INVALID_HANDLE_VALUE) { free(d); return NULL; }
+              d->first = 1;
+              return d;
+          }
+          
+          static struct dirent* readdir(DIR* d) {
+              if (!d->first) {
+                  if (!FindNextFileA(d->hFind, &d->data)) return NULL;
+              }
+              d->first = 0;
+              snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", d->data.cFileName);
+              d->ent.d_type = (d->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? DT_DIR : DT_REG;
+              return &d->ent;
+          }
+          
+          static int closedir(DIR* d) {
+              FindClose(d->hFind); free(d); return 0;
+          }
           "@
-          Set-Content -Path "$incDir/poll.h" -Value $pollContent
+          Set-Content -Path "$incDir/dirent.h" -Value $direntH
 
+          # libgen.h -> basename/dirname stub
+          Set-Content -Path "$incDir/libgen.h" -Value "#pragma once`nstatic char* basename(char* p) { return p; }`nstatic char* dirname(char* p) { return p; }"
+
+          # --- 3. Missing System Headers (Stubs) ---
           Set-Content -Path "$sysDir/time.h" -Value "#pragma once`n#include <time.h>`nstruct timezone { int tz_minuteswest; int tz_dsttime; };"
-          Set-Content -Path "$sysDir/wait.h" -Value "#pragma once"
-          Set-Content -Path "$incDir/pwd.h" -Value "#pragma once"
-          Set-Content -Path "$sysDir/mman.h" -Value "#pragma once`n#define PROT_READ 1`n#define PROT_WRITE 2`n#define MAP_PRIVATE 2`n#define MAP_FAILED ((void*)-1)`n"
-          Set-Content -Path "$sysDir/socket.h" -Value "#pragma once`n#include <winsock2.h>`n#include <ws2tcpip.h>"
+          Set-Content -Path "$sysDir/wait.h" -Value "#pragma once`n#define WEXITSTATUS(s) ((s) & 0xff00) >> 8`n#define WIFEXITED(s) 1"
+          Set-Content -Path "$sysDir/mman.h" -Value "#pragma once`n#define PROT_READ 1`n#define PROT_WRITE 2`n#define MAP_PRIVATE 2`n#define MAP_FAILED ((void*)-1)`nstatic void* mmap(void* a, size_t l, int p, int f, int d, long long o) { return MAP_FAILED; }`nstatic int munmap(void* a, size_t l) { return -1; }"
+          Set-Content -Path "$sysDir/ioctl.h" -Value "#pragma once"
+          Set-Content -Path "$sysDir/resource.h" -Value "#pragma once"
+          Set-Content -Path "$incDir/semaphore.h" -Value "#pragma once"
+          Set-Content -Path "$incDir/arpa/inet.h" -Value "#pragma once`n#include <winsock2.h>"
 
-          # --- Eglut Patch ---
+          # --- 4. Source Patches ---
+          # Eglut Patch
           $eglutCMake = "source/eglut/CMakeLists.txt"
           if (Test-Path $eglutCMake) {
              $content = Get-Content $eglutCMake
@@ -150,7 +221,7 @@ jobs:
              $newContent | Set-Content $eglutCMake
           }
 
-          # --- Logger Patch ---
+          # Logger Patch
           $logFile = "source/logger/src/log.cpp"
           if (Test-Path $logFile) {
              $c = Get-Content $logFile -Raw
@@ -158,7 +229,7 @@ jobs:
              Set-Content -Path $logFile -Value ($fix + $c)
           }
 
-          # --- Linker Stub ---
+          # Linker Stub
           $linkerCMake = "source/mcpelauncher-linker/CMakeLists.txt"
           $stubContent = @"
           cmake_minimum_required(VERSION 3.10)
@@ -175,11 +246,15 @@ jobs:
               Set-Content -Path "source/linux-gamepad/CMakeLists.txt" -Value "# Stubbed"
           }
 
-          # --- FIX: Robust CMake Syntax Patching ---
+          # --- 5. Robust CMake Syntax Patching ---
+          # Fixes: Parse error. Expected a command name, got right paren with text ")".
           $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $cmakeFiles) {
               $content = [System.IO.File]::ReadAllText($file.FullName)
-              $pattern = '(?s)cmake_minimum_required\s*[(].*?[)]'
+              
+              # SAFE REGEX: Use character classes [(] and [)] to avoid escaping issues
+              # Matches 'cmake_minimum_required' ... ( ... ) across newlines
+              $pattern = '(?s)cmake_minimum_requireds*[(].*?[)]'
               $replacement = 'cmake_minimum_required(VERSION 3.10)'
               
               if ($content -match 'cmake_minimum_required') {
@@ -203,13 +278,14 @@ jobs:
           if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
           mkdir build
           
-          # NOTE: /FI forces inclusion of compat_defs.h in EVERY source file.
+          # Force include compat_defs.h via /FI
+          # Add /EHsc for exception handling support
           cmake -S source -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_SDL_INPUT=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DCMAKE_PREFIX_PATH=$env:Qt5_Dir" `
-            "-DCMAKE_CXX_FLAGS=/I $PWD/source/compat-include /FI $PWD/source/compat-include/compat_defs.h"
+            "-DCMAKE_CXX_FLAGS=/EHsc /I $PWD/source/compat-include /FI $PWD/source/compat-include/compat_defs.h"
 
       - name: Build Project
         run: cmake --build build --config Release -j 4
