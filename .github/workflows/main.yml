@@ -247,7 +247,8 @@ jobs:
           $cmakeFiles = Get-ChildItem -Path "source" -Recurse -Filter "CMakeLists.txt"
           foreach ($file in $cmakeFiles) {
               $content = [System.IO.File]::ReadAllText($file.FullName)
-              $pattern = '(?s)cmake_minimum_requireds*[(].*?[)]'
+              # FIXED: Changed 's*' to '\s*' to correctly match whitespace instead of the letter 's'
+              $pattern = '(?s)cmake_minimum_required\s*[(].*?[)]'
               $replacement = 'cmake_minimum_required(VERSION 3.10)'
               
               if ($content -match 'cmake_minimum_required') {
